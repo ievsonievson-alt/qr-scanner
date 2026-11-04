@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>QR Code 現場掃描入庫</title>
-  <!-- 引入輕量解析函式庫 -->
-  <script src="https://unpkg.com/html5-qrcode"></script>
+  <title>條碼 / QR Code 掃描器</title>
+  <!-- 引入最新穩定版 html5-qrcode -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -39,7 +39,24 @@
     }
     #start-btn { background: #0d6efd; color: white; }
     #stop-btn { background: #dc3545; color: white; display: none; }
-    #reader { width: 100%; border-radius: 8px; overflow: hidden; display: none; }
+    
+    /* 核心修復：強制給予相機容器與 video 尺寸，避免 iOS Safari 渲染成 0 高度 */
+    #reader-container {
+      width: 100%;
+      min-height: 280px;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      display: none;
+      margin-top: 10px;
+    }
+    #reader video {
+      width: 100% !important;
+      height: auto !important;
+      border-radius: 8px;
+      object-fit: cover;
+    }
+
     .status-box {
       width: 100%;
       max-width: 480px;
@@ -69,7 +86,11 @@
     <h2>條碼 / QR Code 掃描器</h2>
     <button id="start-btn" class="btn" onclick="startScanner()">啟動相機掃描</button>
     <button id="stop-btn" class="btn" onclick="stopScanner()">關閉相機</button>
-    <div id="reader"></div>
+    
+    <!-- 外層包裹容器 -->
+    <div id="reader-container">
+      <div id="reader"></div>
+    </div>
   </div>
 
   <div class="status-box">
@@ -78,13 +99,12 @@
   </div>
 
   <script>
-    // ⚠️ 請替換為你實際部署的 GAS Web App 網址（結尾必須為 /exec）
+    // ⚠️ 請換成你的 GAS Web App 部署網址（結尾為 /exec）
     const GAS_API_URL = "https://script.google.com/macros/s/你的部署ID/exec";
 
     let html5QrCode = null;
     let isProcessing = false;
 
-    // 掃描成功逼聲提示
     function playBeep() {
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -114,49 +134,58 @@
     }
 
     function startScanner() {
+      const container = document.getElementById("reader-container");
+      container.style.display = "block"; // 啟動前先展開容器，確保 WebKit 能計算視窗大小
+
       html5QrCode = new Html5Qrcode("reader");
 
       const config = {
-        fps: 15,
+        fps: 10,
         qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0
+        videoConstraints: {
+          facingMode: "environment" // 指定背後鏡頭
+        }
       };
 
-      // 原生呼叫後置鏡頭（無 iframe 阻擋）
       html5QrCode.start(
         { facingMode: "environment" },
         config,
         onScanSuccess
       ).then(() => {
-        document.getElementById("reader").style.display = "block";
         document.getElementById("start-btn").style.display = "none";
         document.getElementById("stop-btn").style.display = "block";
         setStatus("相機運作中，請對準條碼", "status-loading");
+
+        // 確保 iOS Safari 標籤具備 playsinline（防止黑屏或彈出全螢幕播放器）
+        const videoElement = document.querySelector("#reader video");
+        if (videoElement) {
+          videoElement.setAttribute("playsinline", "true");
+          videoElement.setAttribute("webkit-playsinline", "true");
+        }
       }).catch(err => {
+        container.style.display = "none";
         setStatus("相機啟動失敗", "status-err");
         alert("相機開啟失敗: " + err);
       });
     }
 
     function onScanSuccess(decodedText) {
-      if (isProcessing) return; // 冷卻鎖定
+      if (isProcessing) return;
       isProcessing = true;
 
       playBeep();
       setStatus(`掃描到：${decodedText}，寫入試算表中...`, "status-loading");
 
-      // 透過 fetch 發送至 GAS 後端
       fetch(GAS_API_URL, {
         method: "POST",
-        mode: "no-cors", // 配合 GAS 重新導向機制
+        mode: "no-cors",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: decodedText })
       })
       .then(() => {
-        // 因 no-cors 模式無法直接讀取回傳 JSON，但成功觸發請求
         setStatus(`已成功寫入 Sheet：${decodedText}`, "status-ok");
         appendHistory(decodedText);
-        setTimeout(() => { isProcessing = false; }, 1500); // 1.5 秒後允許下一筆
+        setTimeout(() => { isProcessing = false; }, 1500);
       })
       .catch(err => {
         setStatus("傳送失敗: " + err, "status-err");
@@ -168,7 +197,7 @@
       if (html5QrCode) {
         html5QrCode.stop().then(() => {
           html5QrCode.clear();
-          document.getElementById("reader").style.display = "none";
+          document.getElementById("reader-container").style.display = "none";
           document.getElementById("start-btn").style.display = "block";
           document.getElementById("stop-btn").style.display = "none";
           setStatus("相機已關閉", "");
